@@ -27,11 +27,11 @@ class ViewController: UIViewController {
     }
 
     @IBAction func doCrash(_ sender: AnyObject) {
-        handledError()
+        unhandledCrash()
     }
 
     func unhandledCrash() {
-        AnObjCClass().raise()
+        fatalError("wellwellwellwell")
     }
 
     func handledError() {
