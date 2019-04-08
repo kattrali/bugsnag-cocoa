@@ -32,8 +32,11 @@
 #import "BugsnagLogger.h"
 #import "BugsnagKeys.h"
 #import "BugsnagSessionTracker.h"
+#import "BSGOutOfMemoryWatchdog.h"
 #import "BSG_RFC3339DateTool.h"
 #import "BSG_KSCrashType.h"
+#import "BSG_KSCrashState.h"
+#import "BSG_KSMach.h"
 
 #if TARGET_IPHONE_SIMULATOR || TARGET_OS_IPHONE
 #import <UIKit/UIKit.h>
@@ -72,6 +75,7 @@ static NSDictionary *notificationNameMap;
 
 static char *sessionId[128];
 static char *sessionStartDate[128];
+static char *watchdogSentinelPath = NULL;
 static NSUInteger handledCount;
 static bool hasRecordedSessions;
 
@@ -99,6 +103,10 @@ void BSSerializeDataCrashHandler(const BSG_KSCrashReportWriter *writer, int type
         }
         if (bsg_g_bugsnag_data.metaDataJSON) {
             writer->addJSONElement(writer, "metaData", bsg_g_bugsnag_data.metaDataJSON);
+        }
+        if (watchdogSentinelPath != NULL) {
+            // Delete the file to indicate a handled termination
+            unlink(watchdogSentinelPath);
         }
     }
 
@@ -176,10 +184,19 @@ void BSGWriteSessionCrashData(BugsnagSession *session) {
     hasRecordedSessions = true;
 }
 
+void BSGAllocateUTF8StringWithContents(char **destination, NSString *contents) {
+    // Copy to avoid linking garbage when the NSString is collected
+    const char *rawContents = [contents UTF8String];
+    *destination = malloc(strlen(rawContents) * sizeof(char));
+    strcpy(*destination, rawContents);
+}
+
 @interface BugsnagNotifier ()
 @property(nonatomic) BugsnagCrashSentry *crashSentry;
 @property(nonatomic) BugsnagErrorReportApiClient *errorReportApiClient;
 @property(nonatomic, readwrite) BugsnagSessionTracker *sessionTracker;
+@property (nonatomic, strong) BSGOutOfMemoryWatchdog *oomWatchdog;
+@property (nonatomic) BOOL appCrashedLastLaunch;
 @end
 
 @implementation BugsnagNotifier
@@ -187,6 +204,7 @@ void BSGWriteSessionCrashData(BugsnagSession *session) {
 @synthesize configuration;
 
 - (id)initWithConfiguration:(BugsnagConfiguration *)initConfiguration {
+    static NSString *const BSGSentinelFileName = @"bugsnag_oom_watchdog.json";
     if ((self = [super init])) {
         self.configuration = initConfiguration;
         self.state = [[BugsnagMetaData alloc] init];
@@ -195,6 +213,15 @@ void BSGWriteSessionCrashData(BugsnagSession *session) {
             BSGKeyVersion : NOTIFIER_VERSION,
             BSGKeyUrl : NOTIFIER_URL
         } mutableCopy];
+
+        NSString *cacheDir = [NSSearchPathForDirectoriesInDomains(
+                                NSCachesDirectory, NSUserDomainMask, YES) firstObject];
+        NSString *sentinelPath = [cacheDir stringByAppendingPathComponent:BSGWatchdogSentinelFileName];
+        NSString *crashPath = [cacheDir stringByAppendingPathComponent:BSGCrashSentinelFileName];
+        BSGAllocateUTF8StringWithContents(&watchdogSentinelPath, sentinelPath);
+        BSGAllocateUTF8StringWithContents(&crashSentinelPath, crashPath);
+        self.oomWatchdog = [[BSGOutOfMemoryWatchdog alloc] initWithSentinelPath:sentinelPath
+                                                                  configuration:configuration];
 
         self.metaDataLock = [[NSLock alloc] init];
         self.configuration.metaData.delegate = self;
@@ -293,6 +320,7 @@ NSString *const kAppWillTerminate = @"App Will Terminate";
     [self.crashSentry install:self.configuration
                     apiClient:self.errorReportApiClient
                       onCrash:&BSSerializeDataCrashHandler];
+    [self computeDidCrashLastLaunch];
     [self setupConnectivityListener];
     [self updateAutomaticBreadcrumbDetectionSettings];
 
@@ -351,6 +379,9 @@ NSString *const kAppWillTerminate = @"App Will Terminate";
 
     _started = YES;
     [self.sessionTracker startNewSessionIfAutoCaptureEnabled];
+
+    const BSG_KSCrash_State *crashState = bsg_kscrashstate_currentState();
+    self.appCrashedLastLaunch = crashState->crashedLastLaunch || [self.oomWatchdog didOOMLastLaunch];
 
     // notification not received in time on initial startup, so trigger manually
     [self willEnterForeground:self];
