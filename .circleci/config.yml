@@ -11,6 +11,12 @@ jobs:
         steps:
             - checkout
             - run:
+                name: Stub CocoaPods Specs
+                command: |
+                    mkdir -p ~/.cocoapods/repos/master
+                    git -C ~/.cocoapods/repos/master init
+                    git -C ~/.cocoapods/repos/master remote add origin https://github.com/CocoaPods/Specs.git
+            - run:
                 name: Bootstrap dependencies
                 command: make bootstrap
             - run:
