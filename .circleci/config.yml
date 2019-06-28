@@ -1,0 +1,26 @@
+version: 2.1
+
+jobs:
+    build-and-test:
+        macos:
+            xcode: "10.1.0"
+        environment:
+            MAZE_SDK: "12.1"
+            SDK: "iphonesimulator12.1"
+            RUBY_SHELL: "/bin/bash"
+        steps:
+            - checkout
+            - run:
+                name: Bootstrap dependencies
+                command: make bootstrap
+            - run:
+                name: End-to-end tests
+                command: bundle exec maze-runner -c
+            - store_test_results:
+                path: maze_output/
+
+workflows:
+    version: 2.1
+    build-and-test:
+        jobs:
+            - build-and-test
